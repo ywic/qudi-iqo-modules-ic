@@ -1,0 +1,523 @@
+import visa
+import numpy as np
+import time
+
+from core.module import Base
+from core.configoption import ConfigOption
+from interface.microwave_interface import MicrowaveInterface
+from interface.microwave_interface import MicrowaveLimits
+from interface.microwave_interface import MicrowaveMode
+from interface.microwave_interface import TriggerEdge
+
+class MicrowaveTSG(Base, MicrowaveInterface):
+    _usb_address = ConfigOption('ip_address', missing='error')
+    _usb_timeout = ConfigOption('ip_timeout', 500, missing='warn')
+
+
+    def on_activate(self):
+        """ Initialisation performed during activation of the module.
+        """
+        self.current_output_mode = MicrowaveMode.CW
+        self.current_output_mode = MicrowaveMode.CW  # Can be MicrowaveMode.CW, MicrowaveMode.LIST or
+        # MicrowaveMode.SWEEP
+        self.current_trig_pol = TriggerEdge.RISING  # Can be TriggerEdge.RISING or
+        # TriggerEdge.FALLING
+        self.output_active = False
+        self.rm = visa.ResourceManager()
+        self.mw_cw_power = -5.0
+        self.mw_sweep_power = -5.0
+        self.mw_cw_frequency = 2.87e9
+        self.mw_frequency_list = list()
+        self.mw_start_freq = 2.5e9
+        self.mw_stop_freq = 3.1e9
+        self.mw_step_freq = 2.0e6
+        try:
+            #self._usb_timeout = self._usb_timeout
+            # trying to load the visa connection to the module
+
+            self._usb_connection = self.rm.open_resource(f'TCPIP0::{self._usb_address}::5025::SOCKET',timeout=self._usb_timeout)
+
+            self.log.info('MW initialised and connected to hardware.')
+
+
+            #self.model = self._usb_connection.write('*IDN?')
+
+            #print(self.model)
+            self._FREQ_SWITCH_SPEED = 0.09  # Frequency switching speed in s (acc. to specs)
+            #set trigger of Sweep and Point to be FALLING
+            print("ok")
+            self._usb_connection.write("*IDN?")
+            print("Written IDN.")
+            # Make sure the buffer is clear. Commands after the first shouldn't
+            # overfill with bytes
+            self._usb_connection.read_termination = '\n'
+            self._usb_connection.read()
+            #self.set_ext_trigger()
+
+        except:
+            self.log.error('This is MWTSG: could not connect to the IP '
+                           'address >>{}<<.'.format(self._usb_address))
+
+        #self._usb_connection.read_termination = '\n'
+        #self._usb_connection.read()
+
+    def on_deactivate(self):
+        """ Deinitialisation performed during deactivation of the module.
+        """
+
+        self._usb_connection.close()
+        self.rm.close()
+        return
+
+    def off(self):
+        """ Switches off any microwave output.
+
+        @return int: error code (0:OK, -1:error)
+
+        Must return AFTER the device is actually stopped.
+        """
+        mode, is_running = self.get_status()
+        if not is_running:
+            return 0
+        self._usb_connection.write('ENBR 0')
+        self.output_active = False
+        #while int(float(self._usb_connection.query('ENBR?'))) != 0:
+            #time.sleep(0.2)
+        #while int(float(self._usb_connection.query('*ENBR?'))) != 0:
+            #time.sleep(0.2)
+        return 0
+
+
+    def get_status(self):
+        """ Gets the current status of the MW source, i.e. the mode (cw, list or sweep) and
+            the output state (stopped, running)
+
+        @return str, bool: mode ['cw', 'list', 'sweep'], is_running [True, False]
+        """
+        if self.current_output_mode == MicrowaveMode.CW:
+            mode = 'cw'
+        elif self.current_output_mode == MicrowaveMode.LIST:
+            mode = 'list'
+        elif self.current_output_mode == MicrowaveMode.SWEEP:
+            mode = 'sweep'
+        return mode, self.output_active
+
+
+    def get_power(self):
+        """ Gets the microwave output power for the currently active mode.
+
+        @return float: the output power in dBm
+        """
+        mode, is_running = self.get_status()
+        if self.current_output_mode == MicrowaveMode.CW:
+            self.mw_cw_power=self._usb_connection.query('AMPR?')
+            return self.mw_cw_power
+        else:
+            time.sleep(0.5)
+            #self.mw_sweep_power = self._usb_connection.query('AMPR?')
+            return self.mw_sweep_power
+
+
+    def get_frequency(self):
+        """ Gets the frequency of the microwave output.
+
+        @return [float, list]: frequency(s) currently set for this device in Hz
+
+        Returns single float value if the device is in cw mode.
+        Returns list like [start, stop, step] if the device is in sweep mode.
+        Returns list of frequencies if the device is in list mode.
+        """
+        self.log.debug('MicrowaveDummy>get_frequency')
+        if self.current_output_mode == MicrowaveMode.CW:
+            return self.mw_cw_frequency
+        elif self.current_output_mode == MicrowaveMode.LIST:
+            return self.mw_frequency_list
+        elif self.current_output_mode == MicrowaveMode.SWEEP:
+            return self.mw_start_freq, self.mw_stop_freq, self.mw_step_freq
+
+
+    def cw_on(self):
+        """ Switches on cw microwave output.
+
+        @return int: error code (0:OK, -1:error)
+
+        Must return AFTER the device is actually running.
+        """
+        print("cw on")
+
+        current_mode, is_running = self.get_status()
+        self.current_output_mode = MicrowaveMode.CW
+        time.sleep(0.5)
+        #self.output_active = True
+        if is_running:
+            if current_mode == 'cw':
+                return 0
+            else:
+                self.off()
+
+        self._usb_connection.write('ENBR 1')
+        self.output_active = True
+        while not is_running:
+            time.sleep(0.2)
+            dummy, is_running = self.get_status()
+
+        return 0
+
+
+    def set_cw(self, frequency=None, power=None):
+        """ Configures the device for cw-mode and optionally sets frequency and/or power
+
+        @param (float) frequency: frequency to set in Hz
+        @param (float) power: power to set in dBm
+
+        @return tuple(float, float, str): with the relation
+            current frequency in Hz,
+            current power in dBm,
+            current mode
+        """
+        self.log.debug('Microwave>set_cw, frequency: {0:f}, power {1:f}:'.format(frequency,
+                                                                                      power))
+        self.output_active = False
+        self.current_output_mode = MicrowaveMode.CW
+        print("set_cw")
+        if frequency is not None:
+            self.mw_cw_frequency = frequency
+            # Construct the command
+            command = 'FREQ {:.3f}'.format(frequency)
+
+            self._usb_connection.write('command')
+
+        if power is not None:
+            self.mw_cw_power = power
+            command = 'AMPR  {:.3f}'.format(power)
+
+            self._usb_connection.write('command')
+        return self.mw_cw_frequency, self.mw_cw_power, 'cw'
+
+
+    def list_on(self):
+        """  Switches on the list mode microwave output.
+
+        @return int: error code (0:OK, -1:error)
+
+        Must return AFTER the device is actually running.
+        """
+        #current_mode, is_running = self.get_status()
+        print("list on")
+        current_mode, is_running = self.get_status()
+        self.current_output_mode = MicrowaveMode.LIST
+        time.sleep(1)
+        self.output_active = True
+        if is_running:
+            if current_mode == 'list':
+                return 0
+            else:
+                self.off()
+        try:
+
+            self._usb_connection.write('ENBR 1')
+            dummy, is_running = self.get_status()
+            while not is_running:
+                time.sleep(0.2)
+                dummy, is_running = self.get_status()
+            return 0
+        except:
+            self.log.warning("Turning on of List mode does not work")
+            return -1
+
+
+    def set_list(self, frequency=None, power=None):
+        """ Configures the device for list-mode and optionally sets frequencies and/or power
+
+        @param (list(float)) frequency: list of frequencies in Hz
+        @param (float) power: MW power of the frequency list in dBm
+
+        @return tuple(list, float, str): current frequencies in Hz, current power in dBm, current mode
+        """
+        print("set list")
+        self.output_active = False
+        self.current_output_mode = MicrowaveMode.LIST
+        mode, is_running = self.get_status()
+        if is_running:
+            self.off()
+        if frequency is not None:
+            num_of_freq = len(frequency)
+            #col_freq=self._usb_connection.query('FREQ?')
+            for ii in range(num_of_freq):
+                self._usb_connection.write('FREQ'.format(ii+1))
+                #time.sleep(0.1)
+                #self._usb_connection.write(':LIST:RF {0:e} Hz'.format(frequency[ii]))
+                time.sleep(0.2)
+                if power is not None:
+                    self._usb_connection.write('AMPR {:.3f}'.format(power))
+                # seems to need some time
+                time.sleep(0.25)
+        else:
+            if power is not None:
+                num_of_freq = len(frequency)
+                #current_rows = int(self._usb_connection.ask(':LIST:RF:POINts?'))
+                for ii in range(num_of_freq):
+                    #self._usb_connection.write(':LIST:ROW:GOTO {0:e}'.format(ii + 1))
+                    #self._usb_connection.write(':LIST:Amplitude {0:e} dBm'.format(power))
+                    # seems to need some time
+                    time.sleep(0.5)
+            else:
+                self.log.warning("Not changing freq or power!")
+
+
+
+        #        self._usb_connection.write(':RFO:STAT ON')
+        #        self._usb_connection.write(':SWE:RF:STAT ON')
+        actual_power = self.get_power()
+        # dont take actual frequencz arraz at the moment since this is far too slow
+        # actual_freq = self.get_frequency()
+        actual_freq = frequency
+        mode, dummy = self.get_status()
+        print(actual_power)
+        return actual_freq, actual_power, mode
+        """
+            self.mw_frequency_list = frequency
+            print(self.mw_frequency_list)
+            command = 'FREQ {:.3f}'.format(frequency[0])
+
+            self._usb_connection.write('command')
+        if power is not None:
+            self.mw_cw_power = power
+            print(self.mw_cw_power )
+            command = 'AMPR  {:.3f}'.format(self.mw_cw_power )
+
+            self._usb_connection.write('command')
+        """
+
+
+
+
+
+    def reset_listpos(self):
+        """ Reset of MW list mode position to start (first frequency step)
+
+        @return int: error code (0:OK, -1:error)
+        """
+        #self.log.error('List mode not available for this microwave hardware!')
+        return 0
+
+
+    def sweep_on(self):
+        """ Switches on the sweep mode.
+
+        @return int: error code (0:OK, -1:error)
+        """
+        print("sweep on")
+
+        mode, is_running = self.get_status()
+        self.current_output_mode = MicrowaveMode.SWEEP
+        time.sleep(1)
+        self.output_active = True
+        if is_running:
+            if mode == 'sweep':
+                return 0
+            else:
+                self.off()
+        try:
+            # Perform the manual sweep
+            self._usb_connection.write('ENBR 1')
+            for i in range(self.num_of_points):
+                freq = self.start + i * self.step
+                self._usb_connection.write('FREQ {0:e} Hz'.format(freq))
+                self._usb_connection.write('AMPR {0:e} dBm'.format(self.power))
+                print(freq)
+                time.sleep(0.2)  # Adjust the dwell time as needed
+
+
+
+            dummy, is_running = self.get_status()
+            while not is_running:
+                time.sleep(0.5)
+                dummy, is_running = self.get_status()
+
+            return 0  # Return 0 indicating success
+        except Exception as e:
+            self.log.error(f"Turning on of manual sweep mode did not work: {e}")
+            return -1
+
+
+    def set_sweep(self, start=None, stop=None, step=None, power=None):
+        """  Configures the device for sweep-mode and optionally sets frequency start/stop/step and/or power
+
+        @return float, float, float, float, str: current start frequency in Hz,
+                                                 current stop frequency in Hz,
+                                                 current frequency step in Hz,
+                                                 current power in dBm,
+                                                 current mode
+        """
+        self.log.debug('MicrowaveDummy>set_sweep, start: {0:f}, stop: {1:f}, step: {2:f}, '
+                       'power: {3:f}'.format(start, stop, step, power))
+        self.output_active = False
+        print("set_sweep")
+        self.current_output_mode = MicrowaveMode.SWEEP
+        mode, is_running = self.get_status()
+
+        if is_running:
+            self.off()
+
+            # Calculate the number of points in the sweep
+            num_of_points = int((stop - start) / step + 1)
+
+            # Set the parameters but don't perform the sweep
+            self.start = start
+            self.stop = stop
+            self.step = step
+            self.power = power
+            self.num_of_points = num_of_points
+        return start, stop, step, power, 'sweep'
+
+    def _turn_off_output(self, repetitions=10):
+        self._usb_connection.write('ENBP 0')
+        dummy, is_running = self.get_status()
+        index = 0
+        while is_running and index < repetitions:
+            time.sleep(0.5)
+            dummy, is_running = self.get_status()
+            index += 1
+
+        index = 0
+        self._usb_connection.write('ENBP 0')
+        #while int(float(self._usb_connection.query('ENBP?'))) != 0 and index < repetitions:
+            #time.sleep(0.5)
+            #index += 1
+
+    def _turn_on_output(self, repetitions=10):
+        self._usb_connection.write('ENBP 1')
+        index = 0
+        while int(float(self._usb_connection.query('ENBP?'))) != 1 and index < repetitions:
+            time.sleep(0.5)
+            index += 1
+        self._usb_connection.write('ENBP 1')
+        dummy, is_running = self.get_status()
+        index = 0
+        while not is_running and index < repetitions:
+            time.sleep(0.5)
+            dummy, is_running = self.get_status()
+            index += 1
+
+    def reset_sweeppos(self):
+        """ Reset of MW List Mode position to start from first given frequency
+
+        @return int: error code (0:OK, -1:error)
+        """
+        # turn off the sweepmode and the rf output and turn it on again
+        # unfortunately sleep times seem to be neccessary
+        time.sleep(0.5)
+        self._turn_off_output()
+        time.sleep(0.2)
+        self._turn_on_output()
+
+        return 0
+
+
+    def reset_sweeppos(self):
+        """ Reset of MW sweep mode position to start (start frequency)
+
+        @return int: error code (0:OK, -1:error)
+        """
+        time.sleep(0.5)
+        self._turn_off_output()
+        time.sleep(0.2)
+        self._turn_on_output()
+
+        return 0
+
+
+    def set_ext_trigger(self, pol, timing):
+        """ Set the external trigger for this device with proper polarization.
+
+        @param TriggerEdge pol: polarisation of the trigger (basically rising edge or falling edge)
+        @param timing: estimated time between triggers
+
+        @return object, float: current trigger polarity [TriggerEdge.RISING, TriggerEdge.FALLING],
+            trigger timing as queried from device
+        """
+        self.log.info('MicrowaveDummy>ext_trigger set')
+        self.current_trig_pol = pol
+        return self.current_trig_pol, timing
+
+    def trigger(self):
+        """ Trigger the next element in the list or sweep mode programmatically.
+
+        @return int: error code (0:OK, -1:error)
+        """
+
+        start_freq = self.get_frequency()
+        self._usb_connection.write('*TRG')
+        time.sleep(self._FREQ_SWITCH_SPEED)
+        curr_freq = self.get_frequency()
+        if start_freq == curr_freq:
+            self.log.error('Internal trigger for MW source did not work!')
+            return -1
+
+        return 0
+
+
+    def get_limits(self):
+        """ Return the device-specific limits in a nested dictionary.
+
+          @return MicrowaveLimits: Microwave limits object
+        """
+        limits = MicrowaveLimits()
+        limits.supported_modes = (MicrowaveMode.CW, MicrowaveMode.LIST, MicrowaveMode.SWEEP)
+
+        limits.min_frequency = 9.0e3
+        limits.max_frequency = 3.0e9
+
+        limits.min_power = -144
+        limits.max_power = 10
+
+        limits.list_minstep = 0.1
+        limits.list_maxstep = 3.0e9
+        limits.list_maxentries = 4000
+
+        limits.sweep_minstep = 0.1
+        limits.sweep_maxstep = 3.0e9
+        limits.sweep_maxentries = 10001
+
+
+        limits.min_frequency = 9e3
+        limits.max_frequency = 3.0e9
+        limits.min_power = -127
+        limits.max_power = 20
+        self.log.warning('Model string unknown, maybe TSG.')
+        # limits.list_maxstep = limits.max_frequency
+        # limits.sweep_maxstep = limits.max_frequency
+        return limits
+    def set_power(self, power=0.):
+        """ Sets the microwave output power.
+
+        @param float power: the power (in dBm) set for this device
+
+        @return int: error code (0:OK, -1:error)
+        """
+
+        if power is not None:
+            self.mw_cw_frequency = power
+            command = 'AMPR  {:.3f}'.format(self.mw_cw_power)
+
+            self._usb_connection.write('command')
+            return 0
+        else:
+            return -1
+
+    def set_frequency(self, freq=None):
+        """ Sets the frequency of the microwave output.
+
+        @param float freq: the frequency (in Hz) set for this device
+
+        @return int: error code (0:OK, -1:error)
+        """
+        if freq is not None:
+            self.mw_fre = freq
+            command = 'FREQ  {:.3f}'.format(self.mw_fre)
+
+            self._usb_connection.write('command')
+            return 0
+        else:
+            return -1
