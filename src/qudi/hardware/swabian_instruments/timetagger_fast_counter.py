@@ -1,45 +1,44 @@
 # -*- coding: utf-8 -*-
-
 """
 A hardware module for communicating with the fast counter FPGA.
 
-Copyright (c) 2021, the qudi developers. See the AUTHORS.md file at the top-level directory of this
-distribution and on <https://github.com/Ulm-IQO/qudi-iqo-modules/>
+Qudi is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-This file is part of qudi.
+Qudi is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-Qudi is free software: you can redistribute it and/or modify it under the terms of
-the GNU Lesser General Public License as published by the Free Software Foundation,
-either version 3 of the License, or (at your option) any later version.
+You should have received a copy of the GNU General Public License
+along with Qudi. If not, see <http://www.gnu.org/licenses/>.
 
-Qudi is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
-without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-See the GNU Lesser General Public License for more details.
-
-You should have received a copy of the GNU Lesser General Public License along with qudi.
-If not, see <https://www.gnu.org/licenses/>.
+Copyright (c) the Qudi Developers. See the COPYRIGHT.txt file at the
+top-level directory of this distribution and at <https://github.com/Ulm-IQO/qudi/>
 """
 
+from interface.fast_counter_interface import FastCounterInterface
 import numpy as np
 import TimeTagger as tt
+from core.module import Base
+from core.configoption import ConfigOption
+import os
 
-from qudi.interface.fast_counter_interface import FastCounterInterface
-from qudi.core.configoption import ConfigOption
 
-
-class TimeTaggerFastCounter(FastCounterInterface):
+class TimeTaggerFastCounter(Base, FastCounterInterface):
     """ Hardware class to controls a Time Tagger from Swabian Instruments.
 
     Example config for copy-paste:
 
     fastcounter_timetagger:
         module.Class: 'swabian_instruments.timetagger_fast_counter.TimeTaggerFastCounter'
-        options:
-            timetagger_channel_apd_0: 0
-            timetagger_channel_apd_1: 1
-            timetagger_channel_detect: 2
-            timetagger_channel_sequence: 3
-            timetagger_sum_channels: 4
+        timetagger_channel_apd_0: 0
+        timetagger_channel_apd_1: 1
+        timetagger_channel_detect: 2
+        timetagger_channel_sequence: 3
+        timetagger_sum_channels: 4
 
     """
 
@@ -55,9 +54,9 @@ class TimeTaggerFastCounter(FastCounterInterface):
         self._tagger = tt.createTimeTagger()
         self._tagger.reset()
 
-        self._number_of_gates = int(100)
-        self._bin_width = 1
-        self._record_length = int(4000)
+        self._number_of_gates = int(2)
+        self._bin_width = 1e-9  #1e10
+        self._record_length = int(40)
 
         if self._sum_channels:
             self._channel_combined = tt.Combiner(self._tagger, channels=[self._channel_apd_0, self._channel_apd_1])
@@ -108,7 +107,7 @@ class TimeTaggerFastCounter(FastCounterInterface):
 
         # the unit of those entries are seconds per bin. In order to get the
         # current binwidth in seonds use the get_binwidth method.
-        constraints['hardware_binwidth_list'] = [1 / 1000e6]
+        constraints['hardware_binwidth_list'] = [1/1e9]#[1 / 1000e6]
 
         # TODO: think maybe about a software_binwidth_list, which will
         #      postprocess the obtained counts. These bins must be integer
@@ -140,20 +139,30 @@ class TimeTaggerFastCounter(FastCounterInterface):
                     gate_length_s: the actual set gate length in seconds
                     number_of_gates: the number of gated, which are accepted
         """
+        #number_of_gates=1
         self._number_of_gates = number_of_gates
-        self._bin_width = bin_width_s * 1e9
+        self._bin_width = bin_width_s #1e9
         self._record_length = 1 + int(record_length_s / bin_width_s)
         self.statusvar = 1
-
+        print("number_of_gates:",number_of_gates)
+        print("binwidth:", int(np.round(self._bin_width *1e12)))#1e12
+        print("number_of_bins:", int(self._record_length/100))#100
         self.pulsed = tt.TimeDifferences(
             tagger=self._tagger,
             click_channel=self._channel_apd,
             start_channel=self._channel_detect,
             next_channel=self._channel_detect,
-            sync_channel=tt.CHANNEL_UNUSED,
-            binwidth=int(np.round(self._bin_width * 1000)),
-            n_bins=int(self._record_length),
+            sync_channel=tt.CHANNEL_UNUSED,#self._channel_sequence,
+            binwidth=int(np.round(self._bin_width *1e12)),
+            n_bins=int(self._record_length/100),
             n_histograms=number_of_gates)
+        #print(int(np.round(self._bin_width )))
+        #print(int(self._record_length))
+        #print(number_of_gates)
+        print("time difference")
+        #self.pulsed=tt.Counter(tagger=self._tagger,channels=[4],binwidth=1e9, n_values=100)
+
+
 
         self.pulsed.stop()
 
@@ -164,6 +173,7 @@ class TimeTaggerFastCounter(FastCounterInterface):
         self.module_state.lock()
         self.pulsed.clear()
         self.pulsed.start()
+        print("getData start")
         self.statusvar = 2
         return 0
 
@@ -217,7 +227,13 @@ class TimeTaggerFastCounter(FastCounterInterface):
         """
         info_dict = {'elapsed_sweeps': None,
                      'elapsed_time': None}  # TODO : implement that according to hardware capabilities
-        return np.array(self.pulsed.getData(), dtype='int64'), info_dict
+
+        self.pulsed.startFor(int(1e16), clear=True)
+        self.pulsed.waitUntilFinished()
+        data = self.pulsed.getData()
+        print(data)
+        return np.array(data, dtype='int64'), info_dict
+
 
     def get_status(self):
         """ Receives the current status of the Fast Counter and outputs it as
@@ -235,3 +251,4 @@ class TimeTaggerFastCounter(FastCounterInterface):
         """ Returns the width of a single timebin in the timetrace in seconds. """
         width_in_seconds = self._bin_width * 1e-9
         return width_in_seconds
+
